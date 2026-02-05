@@ -182,6 +182,7 @@ def process_extracted_table(df):
             if isinstance(target_value, str):
                 if any(txt in target_value for txt in ["반영", "부분반영", "권고", "적합", "조건부적합"]):
                     pass
+                
                 elif any(txt in target_value for txt in ["미반영", "해당없음", "해당사항 없음"]):
                     continue
 
@@ -213,68 +214,44 @@ def extract_tables_from_pdf(pdf_path: str, pages: list, lang: str,
                             implicit_rows: bool, implicit_columns: bool,
                             borderless_tables: bool, min_confidence: int,
                             progress_callback=None):
-    """Extract tables from PDF using PyMuPDF and img2table Image
+    """Extract tables from PDF using img2table PDF directly
     
     Args:
         progress_callback: Optional callback function(current_page, total_pages, status_message)
     """
-    import fitz
-    import io
-    from img2table.document import Image
+    from img2table.document import PDF
     
     ocr = load_ocr(lang)
     
-    # Open PDF with PyMuPDF
-    doc = fitz.open(pdf_path)
-    total_pages = len(doc)
+    # Report progress: Loading PDF
+    if progress_callback:
+        progress_callback(0, 3, "� Loading PDF document...")
     
-    # Determine which pages to process
-    if pages:
-        page_indices = [p - 1 for p in pages if 0 <= p - 1 < total_pages]  # Convert to 0-indexed
-    else:
-        page_indices = list(range(total_pages))
+    # Create img2table PDF object directly
+    pdf = PDF(
+        pdf_path,
+        pages=pages if pages else None,
+        detect_rotation=False,
+        pdf_text_extraction=True
+    )
     
-    pages_to_process = len(page_indices)
-    extracted_tables = {}
+    # Report progress: Extracting tables
+    if progress_callback:
+        progress_callback(1, 3, "🔍 Extracting tables from PDF...")
     
-    for i, page_idx in enumerate(page_indices):
-        current_page = page_idx + 1
-        
-        # Report progress: Rendering page
-        if progress_callback:
-            progress_callback(i, pages_to_process, f"📄 Rendering page {current_page}/{total_pages}...")
-        
-        page = doc[page_idx]
-        
-        # Render page to image
-        pix = page.get_pixmap()
-        img_bytes = pix.tobytes("png")
-        
-        # Report progress: Extracting tables
-        if progress_callback:
-            progress_callback(i, pages_to_process, f"🔍 Extracting tables from page {current_page}/{total_pages}...")
-        
-        # Create img2table Image from bytes
-        img = Image(io.BytesIO(img_bytes))
-        
-        # Extract tables from the image
-        tables = img.extract_tables(
-            ocr=ocr,
-            implicit_rows=implicit_rows,
-            implicit_columns=implicit_columns,
-            borderless_tables=borderless_tables,
-            min_confidence=min_confidence
-        )
-        
-        # Store tables with 1-indexed page number
-        extracted_tables[current_page] = tables
-        
-        # Report progress: Page complete
-        if progress_callback:
-            tables_found = len(tables) if tables else 0
-            progress_callback(i + 1, pages_to_process, f"✅ Page {current_page} complete - found {tables_found} table(s)")
+    # Extract tables directly from PDF
+    extracted_tables = pdf.extract_tables(
+        ocr=ocr,
+        implicit_rows=implicit_rows,
+        implicit_columns=implicit_columns,
+        borderless_tables=borderless_tables,
+        min_confidence=min_confidence
+    )
     
-    doc.close()
+    # Report progress: Complete
+    if progress_callback:
+        total_tables = sum(len(t) for t in extracted_tables.values()) if isinstance(extracted_tables, dict) else len(extracted_tables)
+        progress_callback(3, 3, f"✅ Extraction complete - found {total_tables} table(s)")
     
     return extracted_tables
 
