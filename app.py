@@ -184,11 +184,10 @@ def process_extracted_table(df):
                     pass
                 elif any(txt in target_value for txt in ["미반영", "해당없음", "해당사항 없음"]):
                     continue
+
                 else:
-                    extracted_tables.append(curr_table)
-                    curr_table = None
-                    table_detected = False
                     continue
+                    
 
                 curr_row = {}
                 for index, item in enumerate(row):
@@ -212,26 +211,70 @@ def load_ocr(lang: str):
 
 def extract_tables_from_pdf(pdf_path: str, pages: list, lang: str, 
                             implicit_rows: bool, implicit_columns: bool,
-                            borderless_tables: bool, min_confidence: int):
-    """Extract tables from PDF using img2table"""
-    from img2table.document import PDF
+                            borderless_tables: bool, min_confidence: int,
+                            progress_callback=None):
+    """Extract tables from PDF using PyMuPDF and img2table Image
+    
+    Args:
+        progress_callback: Optional callback function(current_page, total_pages, status_message)
+    """
+    import fitz
+    import io
+    from img2table.document import Image
     
     ocr = load_ocr(lang)
     
-    pdf = PDF(
-        pdf_path,
-        pages=pages if pages else None,
-        detect_rotation=False,
-        pdf_text_extraction=True
-    )
+    # Open PDF with PyMuPDF
+    doc = fitz.open(pdf_path)
+    total_pages = len(doc)
     
-    extracted_tables = pdf.extract_tables(
-        ocr=ocr,
-        implicit_rows=implicit_rows,
-        implicit_columns=implicit_columns,
-        borderless_tables=borderless_tables,
-        min_confidence=min_confidence
-    )
+    # Determine which pages to process
+    if pages:
+        page_indices = [p - 1 for p in pages if 0 <= p - 1 < total_pages]  # Convert to 0-indexed
+    else:
+        page_indices = list(range(total_pages))
+    
+    pages_to_process = len(page_indices)
+    extracted_tables = {}
+    
+    for i, page_idx in enumerate(page_indices):
+        current_page = page_idx + 1
+        
+        # Report progress: Rendering page
+        if progress_callback:
+            progress_callback(i, pages_to_process, f"📄 Rendering page {current_page}/{total_pages}...")
+        
+        page = doc[page_idx]
+        
+        # Render page to image
+        pix = page.get_pixmap()
+        img_bytes = pix.tobytes("png")
+        
+        # Report progress: Extracting tables
+        if progress_callback:
+            progress_callback(i, pages_to_process, f"🔍 Extracting tables from page {current_page}/{total_pages}...")
+        
+        # Create img2table Image from bytes
+        img = Image(io.BytesIO(img_bytes))
+        
+        # Extract tables from the image
+        tables = img.extract_tables(
+            ocr=ocr,
+            implicit_rows=implicit_rows,
+            implicit_columns=implicit_columns,
+            borderless_tables=borderless_tables,
+            min_confidence=min_confidence
+        )
+        
+        # Store tables with 1-indexed page number
+        extracted_tables[current_page] = tables
+        
+        # Report progress: Page complete
+        if progress_callback:
+            tables_found = len(tables) if tables else 0
+            progress_callback(i + 1, pages_to_process, f"✅ Page {current_page} complete - found {tables_found} table(s)")
+    
+    doc.close()
     
     return extracted_tables
 
@@ -382,12 +425,21 @@ def main():
                     tmp_path = tmp_file.name
                 
                 try:
-                    progress_bar = st.progress(0, text="Initializing OCR engine...")
+                    # Create progress bar and status container
+                    progress_bar = st.progress(0, text="🔄 Initializing OCR engine...")
+                    status_container = st.empty()
                     
-                    progress_bar.progress(20, text="Loading PDF document...")
+                    # Define progress callback
+                    def update_progress(current, total, message):
+                        if total > 0:
+                            # Calculate progress: 10% for init, 80% for extraction, 10% for finalization
+                            extraction_progress = int(10 + (current / total) * 80)
+                            progress_bar.progress(extraction_progress, text=message)
+                        status_container.info(message)
                     
-                    # Extract tables
-                    progress_bar.progress(40, text="Extracting tables...")
+                    progress_bar.progress(5, text="📂 Loading PDF document...")
+                    
+                    # Extract tables with progress callback
                     extracted_tables = extract_tables_from_pdf(
                         tmp_path,
                         pages=pages,
@@ -395,18 +447,22 @@ def main():
                         implicit_rows=implicit_rows,
                         implicit_columns=implicit_columns,
                         borderless_tables=borderless_tables,
-                        min_confidence=min_confidence
+                        min_confidence=min_confidence,
+                        progress_callback=update_progress
                     )
                     
-                    progress_bar.progress(80, text="Processing extracted tables...")
+                    progress_bar.progress(95, text="📊 Processing extracted tables...")
                     
                     # Store results in session state
                     st.session_state['extracted_tables'] = extracted_tables
                     st.session_state['apply_korean_filter'] = apply_korean_filter
                     
-                    progress_bar.progress(100, text="Extraction complete!")
+                    progress_bar.progress(100, text="✅ Extraction complete!")
+                    status_container.empty()
                     
-                    st.success(f"✅ Successfully extracted tables from {len(extracted_tables)} page(s)!")
+                    # Count total tables
+                    total_tables = sum(len(t) for t in extracted_tables.values()) if extracted_tables else 0
+                    st.success(f"✅ Successfully extracted {total_tables} table(s) from {len(extracted_tables)} page(s)!")
                     
                 except Exception as e:
                     st.error(f"❌ Error during extraction: {str(e)}")
